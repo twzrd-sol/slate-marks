@@ -1,0 +1,9 @@
+{
+  "name": "slate-marks",
+  "version": "0.0.1",
+  "type": "module",
+  "description": "Seasonal US team-sport attribution marks against Polymarket outcomes. Not a bet, pack, title, or payout.",
+  "scripts": { "test": "node --test" },
+  "dependencies": { "@polymarket/client": "latest" },
+  "engines": { "node": ">=20" }
+}
