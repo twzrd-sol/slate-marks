@@ -1,20 +1,44 @@
 # slate-marks
 
-A seasonal US team-sports slate that records a fantasy lineup and a viewership claim against a Polymarket outcome, and keeps that as an attribution mark.
+Record a seasonal US team-sport lineup against a Polymarket outcome, and keep that record as one attribution mark.
 
-The mark is credibility for sportsmanship. It is not a bet, not a pack, not a title to a physical card, and not a payout.
+The mark is credibility for sportsmanship. It is not a bet, not a pack, not a title to a physical card, and not a payout. This repository is not Radio LAN, not ansem-radio, not vault-titles, not battleship-kit, and not twzrd-trust.
 
-This repository is not Radio LAN, not ansem-radio, not vault-titles, not battleship-kit, and not twzrd-trust.
+## Enter the slate
 
-## What v0 is
+A season names one league: NFL, NBA, MLB, or NHL. College is a later lane. A fixture is one game, copied from Gamma (`gammaEventId`, `gameId`, home, away, start). A lineup is slots on fixtures (`fixtureId` and `side`). It is not a salary cap, and it does not price players.
 
-A local append-only record: season, fixture, fantasy lineup (slots, not a salary cap), outcome cite copied from Polymarket, one attribution mark per lineup and fixture, a Solana pubkey, a USDC notional quote, and an x402 challenge on Base with amount `0`, `payTo` null, status `uninvoked`, `failClosed` true.
+A viewership claim is optional presence. It is not proof that anyone watched.
 
-Public Polymarket reads go through `@polymarket/client` `createPublicClient()`. Tests inject a Gamma payload and do not need the network or a signer.
+## Cite, then mark
 
-## What v0 is not
+An outcome cite copies a Polymarket market: condition id, market type (`moneyline`, `spreads`, or `totals`), outcome token id, and an implied price from 0 to 1. The source string is `polymarket-gamma`. That price is a USDC notional quote. It is not a transfer. Polymarket CLOB collateral is pUSD. Do not treat pUSD as this repo's USDC rail, and do not submit the quote.
 
-No CLOB order. No SecureClient. No private key. No redeem. No pack. No new token. No funded vault. No signature request. See `docs/NON_GOALS.md`.
+`openMark` stores one mark for a lineup and a fixture. A second mark for that same pair throws. `resolveMark` copies `resolvedOutcome` from a supplied Polymarket payload. It does not adjudicate the game and it does not create another asset.
+
+## Rails
+
+SOL is a pubkey stored on the lineup and the mark. There is no mint and no transfer.
+
+USDC is the quoted notional on the cite. There is no transfer.
+
+The x402 challenge is Base, asset USDC, `amount` `"0"`, `payTo` null, `status` `uninvoked`, `failClosed` true, `signerInvocations` 0. If a pre-spend check cannot be reached, leave the signer uninvoked.
+
+## Polymarket reads
+
+New code imports `@polymarket/client` and calls `createPublicClient()`. The pinned version in this repo is `0.12.0`. Do not import `@polymarket/clob-client-v2`. Do not construct `SecureClient`. Do not POST an order. Do not redeem.
+
+Catalogue host: `https://gamma-api.polymarket.com`
+
+- `GET /sports`
+- `GET /teams?league=` with `nfl`, `nba`, `mlb`, or `nhl`
+- `GET /sports/market-types`
+- `GET /events/keyset?game_id=`
+- `GET /markets/keyset?sports_market_types=spreads`
+
+Series slugs confirmed for this cut are `nfl`, `nba`, and `mlb`. An `nhl` series slug was not in that confirmed list. Use `GET /teams?league=nhl` for NHL clubs until that slug is verified.
+
+Gamma is a public read. Restrictions on who may trade Polymarket do not turn this read into an order. The sports socket `wss://sports-api.polymarket.com/ws` is documented in `docs/POLYMARKET.md` and is not required for these tests.
 
 ## Run
 
@@ -23,8 +47,10 @@ npm install
 npm test
 ```
 
+Tests inject a Gamma payload. They do not need the network or a signer.
+
 ## Resume after launch
 
-1. Freeze one already-resolved Polymarket condition onto an attribution mark. Copy the resolution. Do not adjudicate it.
-2. Keep the x402 challenge uninvoked until a pre-spend check can fail closed (same rule as twzrd-trust #131).
-3. Still do not place a CLOB order, mint a token, or fund a vault.
+Freeze one already-resolved Polymarket condition onto an attribution mark. Copy the resolution. Do not adjudicate it. Leave the x402 challenge uninvoked until a pre-spend check can fail closed. Still do not place a CLOB order, mint a token, or fund a vault.
+
+Live Gamma response shapes for market types and `game_id` lookup are not frozen in this cut. Re-read them before depending on a field this fixture does not show.
