@@ -10,3 +10,16 @@ export function usdcNotional(impliedPrice) {
 export function slatePassChallenge() {
   return { scheme: "x402", network: "base", asset: "USDC", amount: "0", resource: "slate-pass", payTo: null, status: "uninvoked", failClosed: true, signerInvocations: 0 };
 }
+
+/** A pre-spend check that cannot be reached leaves the signer uninvoked. A reached block fails closed the same way. This cut never increments signerInvocations. */
+export function considerSigner(check) {
+  const challenge = slatePassChallenge();
+  try {
+    if (typeof check !== "function") return challenge;
+    const result = check();
+    if (!result || result.reached !== true) return challenge;
+    return challenge;
+  } catch {
+    return challenge;
+  }
+}
