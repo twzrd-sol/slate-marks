@@ -16,13 +16,15 @@ An outcome cite copies a Polymarket market: condition id, market type (`moneylin
 
 `openMark` stores one mark for a lineup and a fixture. A second mark for that same pair throws. `resolveMark` copies `resolvedOutcome` from a supplied Polymarket payload. It does not adjudicate the game and it does not create another asset.
 
+`freezeResolvedCondition` accepts that copy only when the payload is already `resolved: true` and its `conditionId` matches the cite. It then freezes the mark. A second freeze throws. An unresolved condition, or a different condition id, is refused and the mark stays open.
+
 ## Rails
 
 SOL is a pubkey stored on the lineup and the mark. There is no mint and no transfer.
 
 USDC is the quoted notional on the cite. There is no transfer.
 
-The x402 challenge is Base, asset USDC, `amount` `"0"`, `payTo` null, `status` `uninvoked`, `failClosed` true, `signerInvocations` 0. If a pre-spend check cannot be reached, leave the signer uninvoked.
+The x402 challenge is Base, asset USDC, `amount` `"0"`, `payTo` null, `status` `uninvoked`, `failClosed` true, `signerInvocations` 0. `considerSigner` keeps that challenge when the pre-spend check is missing, throws, or returns a block. This cut does not invoke a signer.
 
 ## Polymarket reads
 
@@ -49,8 +51,8 @@ npm test
 
 Tests inject a Gamma payload. They do not need the network or a signer.
 
-## Resume after launch
+## Still later
 
-Freeze one already-resolved Polymarket condition onto an attribution mark. Copy the resolution. Do not adjudicate it. Leave the x402 challenge uninvoked until a pre-spend check can fail closed. Still do not place a CLOB order, mint a token, or fund a vault.
+Fetch one live resolved Gamma condition and pass that payload to `freezeResolvedCondition`. Still do not place a CLOB order, mint a token, or fund a vault.
 
 Live Gamma response shapes for market types and `game_id` lookup are not frozen in this cut. Re-read them before depending on a field this fixture does not show.
