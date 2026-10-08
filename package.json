@@ -4,7 +4,8 @@
   "type": "module",
   "description": "Seasonal US team-sport attribution marks against Polymarket outcomes. Not a bet, pack, title, or payout.",
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "start": "node src/server.js"
   },
   "dependencies": {
     "@polymarket/client": "0.12.0"

@@ -51,6 +51,10 @@ npm test
 
 Tests inject a Gamma payload. They do not need the network or a signer.
 
+## Local board
+
+`npm start` pulls the mock resolved game once, freezes that mark, and stores it in `data/slate.sqlite`. It listens on `127.0.0.1:4178`. `HOST=100.111.36.55 npm start` binds that same port on the tailnet. The page shows the fixture, the cited outcome, and the frozen result. A second start does not pull again.
+
 ## Still later
 
 Fetch one live resolved Gamma condition and pass that payload to `freezeResolvedCondition`. Still do not place a CLOB order, mint a token, or fund a vault.
