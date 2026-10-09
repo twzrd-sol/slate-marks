@@ -1,7 +1,8 @@
 import { createServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { freezeCopiedCondition, pullResolved } from "./pull.js";
+import { createSlate } from "./slate.js";
+import { freezeCopiedCondition, pullLiveResolved, pullResolved } from "./pull.js";
 import { loadSlate, saveSlate } from "./store.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -44,43 +45,69 @@ function renderPage(slate) {
     h1 { letter-spacing: 0.08em; text-transform: uppercase; font-size: 1.1rem; }
     .mark { background: #f4f7fb; padding: 24px; margin-top: 16px; }
     .meta { font-family: ui-monospace, monospace; font-size: 0.8rem; }
+    button { font: inherit; padding: 8px 14px; cursor: pointer; background: #10141a; color: #e7eef6; border: 0; }
   </style>
 </head>
 <body>
   <main>
     <h1>Slate marks</h1>
     <p class="lede">One lineup mark copied from an already-resolved game. No order. No payout.</p>
+    <p><button id="refetch" type="button">Re-fetch</button></p>
     ${cards || "<p class=\"lede\">No frozen mark.</p>"}
   </main>
+  <script>
+    document.getElementById("refetch").addEventListener("click", async () => {
+      const response = await fetch("/refetch", { method: "POST" });
+      if (!response.ok) return;
+      location.reload();
+    });
+  </script>
 </body>
 </html>`;
 }
 
-async function ensureMark(dbPath, fetchImpl) {
-  const slate = loadSlate(dbPath);
-  if (slate.marks.length > 0) return slate;
-  const payload = await pullResolved(fetchImpl);
+function stamp() {
+  return new Date().toISOString();
+}
+
+async function freezePayload(dbPath, payload) {
+  const slate = createSlate();
   freezeCopiedCondition(slate, payload, {
     solanaPubkey: LINEUP,
-    citedOutcome: "home",
-    citedAt: "2026-10-07T02:00:00Z",
-    createdAt: "2026-10-07T02:01:00Z",
+    citedOutcome: payload.event.home,
+    citedAt: stamp(),
+    createdAt: stamp(),
   });
   saveSlate(dbPath, slate);
   return slate;
 }
 
+async function ensureMark(dbPath, read) {
+  const existing = loadSlate(dbPath);
+  if (existing.marks.length > 0) return existing;
+  return freezePayload(dbPath, await read());
+}
+
 export function startSlateServer({ dbPath, fetchImpl, host = "127.0.0.1", port = 0 }) {
-  const ready = ensureMark(dbPath, fetchImpl);
+  const read = fetchImpl ? () => pullResolved(fetchImpl) : () => pullLiveResolved();
+  let current = ensureMark(dbPath, read);
   const server = createServer((req, res) => {
-    ready.then((slate) => {
+    current.then(async (slate) => {
       const url = new URL(req.url, "http://127.0.0.1");
+      if (req.method === "POST" && url.pathname === "/refetch") {
+        current = freezePayload(dbPath, await read());
+        const replaced = await current;
+        send(res, 200, JSON.stringify(replaced), "application/json");
+        return;
+      }
+      const stored = loadSlate(dbPath);
+      const shown = stored.marks.length > 0 ? stored : slate;
       if (req.method === "GET" && url.pathname === "/") {
-        send(res, 200, renderPage(slate), "text/html; charset=utf-8");
+        send(res, 200, renderPage(shown), "text/html; charset=utf-8");
         return;
       }
       if (req.method === "GET" && url.pathname === "/record") {
-        send(res, 200, JSON.stringify(slate), "application/json");
+        send(res, 200, JSON.stringify(shown), "application/json");
         return;
       }
       send(res, 404, "not found", "text/plain; charset=utf-8");
@@ -88,7 +115,7 @@ export function startSlateServer({ dbPath, fetchImpl, host = "127.0.0.1", port =
       if (!res.headersSent) send(res, 500, error.message, "text/plain; charset=utf-8");
     });
   });
-  return ready.then(() => new Promise((resolveReady) => {
+  return current.then(() => new Promise((resolveReady) => {
     server.listen(port, host, () => {
       resolveReady({
         port: server.address().port,

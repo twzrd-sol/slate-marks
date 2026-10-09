@@ -53,10 +53,10 @@ Tests inject a Gamma payload. They do not need the network or a signer.
 
 ## Local board
 
-`npm start` pulls the mock resolved game once, freezes that mark, and stores it in `data/slate.sqlite`. It listens on `127.0.0.1:4178`. `HOST=100.111.36.55 npm start` binds that same port on the tailnet. The page shows the fixture, the cited outcome, and the frozen result. A second start does not pull again.
+`npm start` on an empty `data/slate.sqlite` pulls one already-resolved NBA moneyline from Gamma, freezes that mark, and stores it. It listens on `127.0.0.1:4178`. `HOST=100.111.36.55 npm start` binds that same port on the tailnet. The page shows the fixture, the cited outcome, and the frozen result. A second start reads the stored mark and does not pull again. Re-fetch replaces that mark with a new pull. Schema and routes: `docs/architecture.md`.
 
 ## Still later
 
-Fetch one live resolved Gamma condition and pass that payload to `freezeResolvedCondition`. Still do not place a CLOB order, mint a token, or fund a vault.
+A second freeze of the same mark still throws. Re-fetch replaces the stored slate instead of freezing the open mark twice. Still do not place a CLOB order, mint a token, or fund a vault.
 
 Live Gamma response shapes for market types and `game_id` lookup are not frozen in this cut. Re-read them before depending on a field this fixture does not show.
