@@ -1,16 +1,18 @@
 /**
  * ICELAN reward credential adapter for slate-marks.
  *
- * Creates non-transferable reward credential records bound to frozen marks.
+ * Creates non-transferable reward credential records bound to RLAN engagement marks.
  * Credentials are unpriced attestations — they are not bets, payouts, or transfers.
  *
  * CRITICAL CONSTRAINT:
- * ICELAN credentials input is FROZEN MARKS ONLY. Never accept RLAN engagement marks
- * (which carry observations, observationSummary, engagement). This ensures Twitch data
- * never inputs to credential calculations.
+ * ICELAN credentials input is an RLAN MARK REFERENCE (markId + rlanMarkId), not a full
+ * RLAN engagement mark. This ensures the credential references the mark, not embedding
+ * Twitch observations. Passing a full RLAN mark (with observations) throws.
+ *
+ * Chain: frozen mark → RLAN engagement mark → ICELAN credential
  *
  * Policy constraints (from docs/NON_GOALS.md):
- * - Input: frozen marks only (never RLAN engagement marks with observations)
+ * - Input: reference to RLAN mark (never full object with observations)
  * - Non-transferable record (signer identity, never invoked)
  * - Never monetized (unpriced credential, credibility only)
  * - Creator attestation required
@@ -18,39 +20,50 @@
  */
 
 /**
- * Create an ICELAN reward credential from a frozen mark.
+ * Create an ICELAN reward credential bound to an RLAN engagement mark.
  *
- * Input MUST be a frozen mark (no observations, engagement, or RLAN fields).
- * Output is a non-transferable credential record.
+ * Input: reference to RLAN mark (markId + rlanMarkId), not the full mark object.
+ * Output: non-transferable credential record keyed to the RLAN PDA.
+ *
+ * CRITICAL CONSTRAINT: input must be a reference. Passing a full RLAN mark
+ * (with observations, engagement) still throws to prevent confusion.
  */
-export function createRewardCredential(frozenMark, creator) {
-  if (!frozenMark || frozenMark.frozen !== true) {
-    throw new Error("credential requires frozen sportsbook mark");
+export function createRewardCredential(rlanReference, creator) {
+  if (!rlanReference || typeof rlanReference !== "object") {
+    throw new Error("credential requires RLAN mark reference object");
+  }
+  if (!rlanReference.markId || typeof rlanReference.markId !== "string") {
+    throw new Error("credential reference requires markId");
+  }
+  if (!rlanReference.rlanMarkId || typeof rlanReference.rlanMarkId !== "string") {
+    throw new Error("credential reference requires rlanMarkId");
   }
   if (!creator || typeof creator !== "string") {
     throw new Error("credential requires creator solanaPubkey");
   }
 
-  // CRITICAL CONSTRAINT: reject if input carries RLAN fields
-  if (frozenMark.observations) {
-    throw new Error("ICELAN input must not carry observations (RLAN field)");
+  // CRITICAL CONSTRAINT: reject if input carries full RLAN mark fields
+  if (rlanReference.observations) {
+    throw new Error("ICELAN input must not carry observations (pass reference only)");
   }
-  if (frozenMark.observationSummary) {
-    throw new Error("ICELAN input must not carry observationSummary (RLAN field)");
+  if (rlanReference.observationSummary) {
+    throw new Error("ICELAN input must not carry observationSummary (pass reference only)");
   }
-  if (frozenMark.engagement) {
-    throw new Error("ICELAN input must not carry engagement (RLAN field)");
+  if (rlanReference.engagement) {
+    throw new Error("ICELAN input must not carry engagement (pass reference only)");
   }
 
+  // If gameId/resolvedOutcome are present, they're from the reference
   const credential = {
-    id: `icelan_credential_${frozenMark.id}`,
-    markId: frozenMark.id,
+    id: `icelan_credential_${rlanReference.markId}`,
+    markId: rlanReference.markId,
+    rlanMarkId: rlanReference.rlanMarkId, // Reference to RLAN engagement PDA
     creator: creator, // Signer identity, never invoked
 
     // Sportsbook evidence (context only)
-    gameId: frozenMark.gameId || null,
-    resolvedOutcome: frozenMark.resolvedOutcome || null,
-    citedAt: frozenMark.citedAt || null,
+    gameId: rlanReference.gameId || null,
+    resolvedOutcome: rlanReference.resolvedOutcome || null,
+    citedAt: rlanReference.citedAt || null,
 
     // Non-transferable, unpriced credential
     transferable: false,
@@ -90,26 +103,44 @@ export function validateCredentialConstraints(credential) {
 }
 
 /**
- * Prepare ICELAN batch from slate.
+ * Prepare ICELAN batch from slate + RLAN engagement marks.
  *
- * Creates credentials for all frozen marks in the slate.
- * Skips unfrozen marks (logs warning).
+ * Creates credentials for each RLAN engagement mark.
+ * Requires engagement marks to have markId + rlanMarkId.
+ * Skips marks with missing engagement data (logs warning).
+ *
+ * @param {Object} slate - The slate document
+ * @param {Array} engagementMarksByMarkId - Array of {markId, rlanMarkId, gameId, resolvedOutcome, ...}
+ * @returns {Array} Validated reward credentials
  */
-export function prepareICELANBatch(slate) {
-  if (!slate || !Array.isArray(slate.marks)) {
-    throw new Error("slate must have marks array");
+export function prepareICELANBatch(slate, engagementMarksByMarkId = []) {
+  if (!Array.isArray(engagementMarksByMarkId)) {
+    throw new Error("engagementMarksByMarkId must be array");
   }
 
-  const frozenMarks = slate.marks.filter((m) => m.frozen === true);
   const credentials = [];
 
-  for (const mark of frozenMarks) {
+  for (const engagementMark of engagementMarksByMarkId) {
     try {
-      const credential = createRewardCredential(mark, mark.solanaPubkey);
+      // Create RLAN reference from engagement mark
+      const rlanReference = {
+        markId: engagementMark.markId,
+        rlanMarkId: engagementMark.rlanMarkId || engagementMark.id,
+        gameId: engagementMark.gameId,
+        resolvedOutcome: engagementMark.resolvedOutcome,
+        citedAt: engagementMark.citedAt,
+      };
+
+      const credential = createRewardCredential(
+        rlanReference,
+        engagementMark.creator || (slate?.creator)
+      );
       validateCredentialConstraints(credential);
       credentials.push(credential);
     } catch (err) {
-      console.error(`Failed to prepare ICELAN credential for mark ${mark.id}: ${err.message}`);
+      console.error(
+        `Failed to prepare ICELAN credential for engagement ${engagementMark.rlanMarkId}: ${err.message}`
+      );
       continue;
     }
   }
@@ -121,7 +152,7 @@ export function prepareICELANBatch(slate) {
  * Encode credential for ICELAN chain storage.
  *
  * Strips internal flags (transferable, monetized).
- * Keeps: creator, gameId, resolvedOutcome.
+ * Keeps: creator, markId, rlanMarkId, gameId, resolvedOutcome, timestamps.
  *
  * @param {Object} credential - Validated reward credential
  * @returns {string} JSON for on-chain storage
@@ -129,6 +160,7 @@ export function prepareICELANBatch(slate) {
 export function encodeCredentialData(credential) {
   const data = {
     markId: credential.markId,
+    rlanMarkId: credential.rlanMarkId,
     creator: credential.creator,
     gameId: credential.gameId,
     resolvedOutcome: credential.resolvedOutcome,
