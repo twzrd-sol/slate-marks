@@ -2,6 +2,39 @@ import { createReadAdapter } from "./polymarket.js";
 import { freezeResolvedCondition, openMark, recordCite, recordFixture, recordLineup, recordSeason } from "./slate.js";
 
 const GAMMA_EVENTS = "https://gamma-api.polymarket.com/events?closed=true&limit=10&tag_slug=nba";
+const GAMMA_TIMEOUT_MS = 10_000;
+const GAMMA_MAX_RESPONSE_BYTES = 1_048_576;
+
+async function readBoundedBody(response) {
+  const reader = response.body?.getReader?.();
+  if (reader) {
+    const chunks = [];
+    let size = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > GAMMA_MAX_RESPONSE_BYTES) {
+        await reader.cancel();
+        throw new Error("gamma response is too large");
+      }
+      chunks.push(value);
+    }
+    const body = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      body.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return new TextDecoder().decode(body);
+  }
+  if (typeof response.text === "function") {
+    const body = await response.text();
+    if (Buffer.byteLength(body, "utf8") > GAMMA_MAX_RESPONSE_BYTES) throw new Error("gamma response is too large");
+    return body;
+  }
+  return null;
+}
 
 function listField(value) {
   if (Array.isArray(value)) return value;
@@ -64,9 +97,15 @@ export function payloadFromGammaEvent(event) {
 
 /** Read one already-resolved NBA moneyline from Gamma. */
 export async function pullLiveResolved(fetchImpl = globalThis.fetch) {
-  const response = await fetchImpl(GAMMA_EVENTS, { headers: { accept: "application/json" } });
+  const response = await fetchImpl(GAMMA_EVENTS, {
+    headers: { accept: "application/json" },
+    signal: AbortSignal.timeout(GAMMA_TIMEOUT_MS),
+  });
   if (!response?.ok) throw new Error("gamma read failed");
-  const events = await response.json();
+  const contentLength = Number(response.headers?.get?.("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > GAMMA_MAX_RESPONSE_BYTES) throw new Error("gamma response is too large");
+  const body = await readBoundedBody(response);
+  const events = body === null ? await response.json() : JSON.parse(body);
   if (!Array.isArray(events)) throw new Error("gamma events missing");
   for (const event of events) {
     try {

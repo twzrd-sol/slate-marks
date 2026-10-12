@@ -1,7 +1,6 @@
 import { createServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createSlate } from "./slate.js";
 import { freezeCopiedCondition, pullLiveResolved, pullResolved } from "./pull.js";
 import { loadSlate, saveSlate } from "./store.js";
 
@@ -21,7 +20,7 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
-function renderPage(slate) {
+function renderPage(slate, refreshError = "") {
   const cards = slate.marks.map((mark) => {
     const fixture = slate.fixtures.find((row) => row.id === mark.fixtureId);
     const cite = slate.cites.find((row) => row.id === mark.outcomeCiteId);
@@ -46,20 +45,28 @@ function renderPage(slate) {
     .mark { background: #f4f7fb; padding: 24px; margin-top: 16px; }
     .meta { font-family: ui-monospace, monospace; font-size: 0.8rem; }
     button { font: inherit; padding: 8px 14px; cursor: pointer; background: #10141a; color: #e7eef6; border: 0; }
+    .error { color: #ffb4ab; }
   </style>
 </head>
 <body>
   <main>
     <h1>Slate marks</h1>
-    <p class="lede">One lineup mark copied from an already-resolved game. No order. No payout.</p>
+    <p class="lede">Frozen lineup marks copied from already-resolved games. No order. No payout.</p>
     <p><button id="refetch" type="button">Re-fetch</button></p>
+    <p id="refresh-status" class="${refreshError ? "error" : "lede"}" role="status">${escapeHtml(refreshError)}</p>
     ${cards || "<p class=\"lede\">No frozen mark.</p>"}
   </main>
   <script>
     document.getElementById("refetch").addEventListener("click", async () => {
       const response = await fetch("/refetch", { method: "POST" });
-      if (!response.ok) return;
-      location.reload();
+      if (response.ok) {
+        location.reload();
+        return;
+      }
+      const result = await response.json().catch(() => ({}));
+      const status = document.getElementById("refresh-status");
+      status.className = "error";
+      status.textContent = result.error || "Refresh failed; saved history is unchanged.";
     });
   </script>
 </body>
@@ -70,44 +77,57 @@ function stamp() {
   return new Date().toISOString();
 }
 
-async function freezePayload(dbPath, payload) {
-  const slate = createSlate();
-  freezeCopiedCondition(slate, payload, {
+function freezePayload(dbPath, payload) {
+  const slate = loadSlate(dbPath);
+  if (slate.cites.some((cite) => cite.conditionId === payload.condition.conditionId)) return slate;
+  const updated = structuredClone(slate);
+  freezeCopiedCondition(updated, payload, {
     solanaPubkey: LINEUP,
     citedOutcome: payload.event.home,
     citedAt: stamp(),
     createdAt: stamp(),
   });
-  saveSlate(dbPath, slate);
-  return slate;
-}
-
-async function ensureMark(dbPath, read) {
-  const existing = loadSlate(dbPath);
-  if (existing.marks.length > 0) return existing;
-  return freezePayload(dbPath, await read());
+  saveSlate(dbPath, updated);
+  return updated;
 }
 
 export function startSlateServer({ dbPath, fetchImpl, host = "127.0.0.1", port = 0 }) {
   const read = fetchImpl ? () => pullResolved(fetchImpl) : () => pullLiveResolved();
-  let current = ensureMark(dbPath, read);
+  let refreshError = "";
+  let refreshInFlight = null;
+  const refresh = () => {
+    if (refreshInFlight) return refreshInFlight;
+    refreshInFlight = Promise.resolve().then(read).then((payload) => {
+      const slate = freezePayload(dbPath, payload);
+      refreshError = "";
+      return slate;
+    }).catch((error) => {
+      refreshError = `Refresh failed: ${error?.message || "unknown error"}. Saved history is unchanged.`;
+      throw error;
+    }).finally(() => { refreshInFlight = null; });
+    return refreshInFlight;
+  };
+  const existing = loadSlate(dbPath);
+  const ready = existing.marks.length > 0 ? Promise.resolve(existing) : refresh().catch(() => loadSlate(dbPath));
   const server = createServer((req, res) => {
-    current.then(async (slate) => {
+    ready.then(async () => {
       const url = new URL(req.url, "http://127.0.0.1");
       if (req.method === "POST" && url.pathname === "/refetch") {
-        current = freezePayload(dbPath, await read());
-        const replaced = await current;
-        send(res, 200, JSON.stringify(replaced), "application/json");
+        try {
+          const updated = await refresh();
+          send(res, 200, JSON.stringify(updated), "application/json");
+        } catch {
+          send(res, 502, JSON.stringify({ error: refreshError }), "application/json");
+        }
         return;
       }
-      const stored = loadSlate(dbPath);
-      const shown = stored.marks.length > 0 ? stored : slate;
+      const shown = loadSlate(dbPath);
       if (req.method === "GET" && url.pathname === "/") {
-        send(res, 200, renderPage(shown), "text/html; charset=utf-8");
+        send(res, 200, renderPage(shown, refreshError), "text/html; charset=utf-8");
         return;
       }
       if (req.method === "GET" && url.pathname === "/record") {
-        send(res, 200, JSON.stringify(shown), "application/json");
+        send(res, 200, JSON.stringify({ ...shown, refreshError }), "application/json");
         return;
       }
       send(res, 404, "not found", "text/plain; charset=utf-8");
@@ -115,7 +135,7 @@ export function startSlateServer({ dbPath, fetchImpl, host = "127.0.0.1", port =
       if (!res.headersSent) send(res, 500, error.message, "text/plain; charset=utf-8");
     });
   });
-  return current.then(() => new Promise((resolveReady) => {
+  return ready.then(() => new Promise((resolveReady) => {
     server.listen(port, host, () => {
       resolveReady({
         port: server.address().port,

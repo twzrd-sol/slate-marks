@@ -72,13 +72,31 @@ test("Gamma winner is tied to its outcome token and event identity must be prese
 
 test("pullLiveResolved reads the Gamma events URL", async () => {
   let seen = "";
-  const payload = await pullLiveResolved(async (url) => {
+  let options;
+  const payload = await pullLiveResolved(async (url, fetchOptions) => {
     seen = url;
+    options = fetchOptions;
     return { ok: true, json: async () => [lakers] };
   });
   assert.match(seen, /^https:\/\/gamma-api\.polymarket\.com\/events\?/);
   assert.match(seen, /tag_slug=nba/);
+  assert.ok(options.signal instanceof AbortSignal);
   assert.equal(payload.condition.conditionId, lakers.markets[0].conditionId);
+});
+
+test("pullLiveResolved rejects Gamma responses above its configured byte bound", async () => {
+  await assert.rejects(() => pullLiveResolved(async () => ({
+    ok: true,
+    headers: { get: () => "1048577" },
+    text: async () => "[]",
+  })), /too large/);
+  let cancelled = false;
+  const oversizedChunk = new Uint8Array(1_048_577);
+  await assert.rejects(() => pullLiveResolved(async () => ({
+    ok: true,
+    body: { getReader: () => ({ read: async () => ({ done: false, value: oversizedChunk }), cancel: async () => { cancelled = true; } }) },
+  })), /too large/);
+  assert.equal(cancelled, true);
 });
 
 test("a live Gamma moneyline freezes into sqlite", async () => {
