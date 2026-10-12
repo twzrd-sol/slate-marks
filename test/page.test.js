@@ -193,3 +193,46 @@ test("concurrent refetch requests share one Gamma read", async () => {
     await server.close();
   }
 });
+
+test("overlapping failed refetches share one rejection and a later retry starts a new read", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "slate-refresh-coalesce-reject-"));
+  const dbPath = join(dir, "slate.sqlite");
+  let calls = 0;
+  let notifyFailedRead;
+  const failedReadStarted = new Promise((resolve) => { notifyFailedRead = resolve; });
+  let rejectFailedRead;
+  const failedRead = new Promise((_resolve, reject) => { rejectFailedRead = reject; });
+  const server = await startSlateServer({
+    dbPath,
+    fetchImpl: async () => {
+      calls += 1;
+      if (calls === 1 || calls === 3) return mockResolvedGamma();
+      notifyFailedRead();
+      return failedRead;
+    },
+    host: "127.0.0.1",
+    port: 0,
+  });
+  const base = `http://127.0.0.1:${server.port}`;
+  try {
+    const first = fetch(`${base}/refetch`, { method: "POST" });
+    const second = fetch(`${base}/refetch`, { method: "POST" });
+    await failedReadStarted;
+    assert.equal(calls, 2, "one startup read plus one shared failing refresh read");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    rejectFailedRead(new Error("temporary read failure"));
+    const responses = await Promise.all([first, second]);
+    assert.deepEqual(responses.map((response) => response.status), [502, 502]);
+    assert.equal(calls, 2, "overlapping failures share the same rejected promise");
+
+    const retry = await fetch(`${base}/refetch`, { method: "POST" });
+    assert.equal(retry.status, 200);
+    assert.equal(calls, 3, "a later request after settlement starts a new read");
+    const record = await fetch(`${base}/record`).then((response) => response.json());
+    assert.equal(record.marks.length, 1, "the successful retry dedupes the existing condition");
+    assert.equal(record.refreshError, "");
+  } finally {
+    rejectFailedRead(new Error("test cleanup"));
+    await server.close();
+  }
+});

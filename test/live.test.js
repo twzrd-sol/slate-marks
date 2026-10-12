@@ -84,7 +84,7 @@ test("pullLiveResolved reads the Gamma events URL", async () => {
     payload = await pullLiveResolved(async (url, fetchOptions) => {
       seen = url;
       options = fetchOptions;
-      return { ok: true, json: async () => [lakers] };
+      return new Response(JSON.stringify([lakers]), { headers: { "content-type": "application/json" } });
     });
   } finally {
     AbortSignal.timeout = originalTimeout;
@@ -109,6 +109,13 @@ test("pullLiveResolved rejects Gamma responses above its configured byte bound",
     body: { getReader: () => ({ read: async () => ({ done: false, value: oversizedChunk }), cancel: async () => { cancelled = true; } }) },
   })), /too large/);
   assert.equal(cancelled, true);
+});
+
+test("pullLiveResolved rejects an unreadable JSON-only response instead of bypassing the size bound", async () => {
+  await assert.rejects(() => pullLiveResolved(async () => ({
+    ok: true,
+    json: async () => [lakers],
+  })), /body is not readable/);
 });
 
 test("a live Gamma moneyline freezes into sqlite", async () => {

@@ -33,7 +33,7 @@ async function readBoundedBody(response) {
     if (Buffer.byteLength(body, "utf8") > GAMMA_MAX_RESPONSE_BYTES) throw new Error("gamma response is too large");
     return body;
   }
-  return null;
+  throw new Error("gamma response body is not readable");
 }
 
 function listField(value) {
@@ -105,7 +105,7 @@ export async function pullLiveResolved(fetchImpl = globalThis.fetch) {
   const contentLength = Number(response.headers?.get?.("content-length"));
   if (Number.isFinite(contentLength) && contentLength > GAMMA_MAX_RESPONSE_BYTES) throw new Error("gamma response is too large");
   const body = await readBoundedBody(response);
-  const events = body === null ? await response.json() : JSON.parse(body);
+  const events = JSON.parse(body);
   if (!Array.isArray(events)) throw new Error("gamma events missing");
   for (const event of events) {
     try {
