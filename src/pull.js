@@ -6,25 +6,46 @@ const GAMMA_EVENTS = "https://gamma-api.polymarket.com/events?closed=true&limit=
 function listField(value) {
   if (Array.isArray(value)) return value;
   if (typeof value !== "string" || value.length === 0) throw new Error("gamma list is required");
-  return JSON.parse(value);
+  const parsed = JSON.parse(value);
+  if (!Array.isArray(parsed)) throw new Error("gamma list must be an array");
+  return parsed;
+}
+
+function nonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 /** Map one Gamma event into the payload freezeCopiedCondition already accepts. */
 export function payloadFromGammaEvent(event) {
-  const market = (event?.markets ?? []).find((row) => row.sportsMarketType === "moneyline" && row.umaResolutionStatus === "resolved" && row.closed === true);
+  const market = (event?.markets ?? []).find((row) => row?.sportsMarketType === "moneyline" && row?.umaResolutionStatus === "resolved" && row?.closed === true);
   if (!market) throw new Error("resolved moneyline missing");
   const outcomes = listField(market.outcomes);
-  const prices = listField(market.outcomePrices).map(Number);
+  const rawPrices = listField(market.outcomePrices);
   const tokens = listField(market.clobTokenIds);
-  const winner = prices.findIndex((price) => price === 1);
-  if (winner < 0 || !outcomes[0] || !outcomes[1] || !market.conditionId) throw new Error("condition is not already resolved");
+  if (outcomes.length !== 2 || !outcomes.every(nonEmptyString) || outcomes[0].trim() === outcomes[1].trim()) {
+    throw new Error("moneyline must have two distinct outcomes");
+  }
+  if (rawPrices.length !== outcomes.length || !rawPrices.every((price) =>
+    (typeof price === "number" || (typeof price === "string" && price.trim() !== "")) &&
+    Number.isFinite(Number(price)) && Number(price) >= 0 && Number(price) <= 1,
+  )) {
+    throw new Error("moneyline prices must be finite probabilities for each outcome");
+  }
+  const prices = rawPrices.map(Number);
+  const tokensAreValid = tokens.length === outcomes.length && tokens.every(nonEmptyString) && new Set(tokens).size === tokens.length;
+  const winners = prices.flatMap((price, index) => price === 1 ? [index] : []);
+  if (!tokensAreValid || winners.length !== 1 || prices.some((price) => price !== 0 && price !== 1) || !nonEmptyString(market.conditionId)) {
+    throw new Error("condition is not already resolved unambiguously");
+  }
+  const winner = winners[0];
+  if (!nonEmptyString(event?.id)) throw new Error("Gamma event id is required");
   return {
     league: "NBA",
     label: event.slug ?? event.title ?? "nba",
     startsAt: event.startDate ?? null,
     endsAt: event.endDate ?? null,
     event: {
-      id: String(event.id),
+      id: event.id.trim(),
       game_id: event.gameId ?? null,
       home: outcomes[0],
       away: outcomes[1],

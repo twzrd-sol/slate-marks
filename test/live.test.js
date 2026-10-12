@@ -36,6 +36,40 @@ test("a resolved Gamma event becomes one frozen slate payload", () => {
   assert.equal(payload.condition.outcomeTokenId, "1120");
 });
 
+test("Gamma moneyline validation rejects incomplete or ambiguous resolved payloads", () => {
+  const malformed = [
+    { outcomes: '["Lakers"]' },
+    { outcomes: '["Lakers", " "]' },
+    { outcomes: '["Lakers", "Lakers"]' },
+    { outcomePrices: '["1"]' },
+    { outcomePrices: '["1", "NaN"]' },
+    { outcomePrices: '["1", "0.5"]' },
+    { outcomePrices: '["1", "1"]' },
+    { outcomePrices: '["0", "0"]' },
+    { clobTokenIds: '["1120"]' },
+    { clobTokenIds: '["1120", " "]' },
+    { clobTokenIds: '["1120", "1120"]' },
+    { outcomes: '{"home":"Lakers"}' },
+    { conditionId: " " },
+  ];
+  for (const change of malformed) {
+    const event = structuredClone(lakers);
+    Object.assign(event.markets[0], change);
+    assert.throws(() => payloadFromGammaEvent(event), undefined, JSON.stringify(change));
+  }
+});
+
+test("Gamma winner is tied to its outcome token and event identity must be present", () => {
+  const event = structuredClone(lakers);
+  event.markets[0].outcomes = '["Pelicans", "Lakers"]';
+  event.markets[0].outcomePrices = '["0", "1"]';
+  event.markets[0].clobTokenIds = '["1768", "1120"]';
+  const payload = payloadFromGammaEvent(event);
+  assert.equal(payload.condition.resolvedOutcome, "Lakers");
+  assert.equal(payload.condition.outcomeTokenId, "1120");
+  assert.throws(() => payloadFromGammaEvent({ ...event, id: "" }), /event id/);
+});
+
 test("pullLiveResolved reads the Gamma events URL", async () => {
   let seen = "";
   const payload = await pullLiveResolved(async (url) => {
