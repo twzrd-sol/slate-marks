@@ -1,8 +1,17 @@
+import express from "express";
 import { createServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { freezeCopiedCondition, pullLiveResolved, pullResolved } from "./pull.js";
 import { loadSlate, saveSlate } from "./store.js";
+import { createAttestationRecord, encodeAttestationData } from "./mainnet.js";
+import {
+  createHelixEngagementObservation,
+  createEngagementMark,
+  encodeEngagementMarkData,
+} from "./rlan.js";
+import { createRewardCredential, encodeCredentialData } from "./icelan.js";
+import { createHelixClient, observeStreamEngagement, observationToEngagementMetrics } from "./helix-client.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const LINEUP = "So11111111111111111111111111111111111111112";
@@ -95,7 +104,7 @@ function freezePayload(dbPath, payload) {
   return updated;
 }
 
-export function startSlateServer({ dbPath, fetchImpl, host = "127.0.0.1", port = 0 }) {
+export function startSlateServer({ dbPath, fetchImpl, host = "127.0.0.1", port = 0, helixClientId = "", helixAccessToken = "" }) {
   const read = fetchImpl ? () => pullResolved(fetchImpl) : () => pullLiveResolved();
   let refreshError = "";
   let refreshInFlight = null;
@@ -113,38 +122,163 @@ export function startSlateServer({ dbPath, fetchImpl, host = "127.0.0.1", port =
   };
   const existing = loadSlate(dbPath);
   const ready = existing.marks.length > 0 ? Promise.resolve(existing) : refresh().catch(() => loadSlate(dbPath));
-  const server = createServer((req, res) => {
+
+  // Create Express app for API endpoints
+  const app = express();
+  app.use(express.json());
+
+  // Initialize Helix client if credentials provided
+  const helixClient = helixClientId && helixAccessToken
+    ? createHelixClient(helixClientId, helixAccessToken)
+    : null;
+
+  // POST /prepare/mainnet
+  app.post("/prepare/mainnet", async (req, res) => {
+    try {
+      const { frozenMark, creator } = req.body;
+      if (!frozenMark || !creator) {
+        return res.status(400).json({ error: "frozenMark and creator required" });
+      }
+      const attestation = createAttestationRecord(frozenMark, null, frozenMark.citedAt);
+      const encoded = encodeAttestationData(attestation);
+      const instruction = {
+        program: "mainnet-attestation",
+        keys: [
+          { pubkey: creator, isSigner: false, isWritable: true },
+          { pubkey: "11111111111111111111111111111111", isSigner: false, isWritable: false },
+        ],
+        data: encoded,
+      };
+      res.json({
+        instruction,
+        blockhash_required: true,
+        pda_seed: ["attestation", creator, frozenMark.conditionId],
+      });
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // POST /prepare/rlan
+  app.post("/prepare/rlan", async (req, res) => {
+    try {
+      const { frozenMark, streamerUsername, creator } = req.body;
+      if (!frozenMark || !streamerUsername || !creator) {
+        return res.status(400).json({ error: "frozenMark, streamerUsername, and creator required" });
+      }
+      if (!helixClient) {
+        return res.status(503).json({ error: "Helix client not configured" });
+      }
+      const observation = await observeStreamEngagement(helixClient, streamerUsername);
+      if (!observation) {
+        return res.status(404).json({ error: "Stream offline or not found" });
+      }
+      const engagementObs = createHelixEngagementObservation({ signal: "viewers", data: observation });
+      const engagementMark = createEngagementMark(frozenMark, engagementObs, creator);
+      const metrics = observationToEngagementMetrics(observation);
+      engagementMark.engagement = metrics;
+      const encoded = encodeEngagementMarkData(engagementMark);
+      const instruction = {
+        program: "rlan-engagement",
+        keys: [
+          { pubkey: creator, isSigner: false, isWritable: true },
+          { pubkey: frozenMark.id, isSigner: false, isWritable: false },
+          { pubkey: "11111111111111111111111111111111", isSigner: false, isWritable: false },
+        ],
+        data: encoded,
+      };
+      res.json({
+        instruction,
+        blockhash_required: true,
+        pda_seed: ["engagement", creator, frozenMark.id],
+        observation_timestamp: observation.observed_at,
+      });
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // POST /prepare/icelan
+  app.post("/prepare/icelan", async (req, res) => {
+    try {
+      const { rlanMark, creator } = req.body;
+      if (!rlanMark || !creator) {
+        return res.status(400).json({ error: "rlanMark and creator required" });
+      }
+      const rlanReference = {
+        markId: rlanMark.markId,
+        rlanMarkId: rlanMark.id,
+        gameId: rlanMark.gameId,
+        resolvedOutcome: rlanMark.resolvedOutcome,
+        citedAt: rlanMark.citedAt,
+      };
+      const credential = createRewardCredential(rlanReference, creator);
+      const encoded = encodeCredentialData(credential);
+      const instruction = {
+        program: "icelan-rewards",
+        keys: [
+          { pubkey: creator, isSigner: false, isWritable: true },
+          { pubkey: rlanMark.id, isSigner: false, isWritable: false },
+          { pubkey: "11111111111111111111111111111111", isSigner: false, isWritable: false },
+        ],
+        data: encoded,
+      };
+      res.json({
+        instruction,
+        blockhash_required: true,
+        pda_seed: ["credential", creator, rlanMark.id],
+      });
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // GET /health
+  app.get("/health", (req, res) => {
+    res.json({
+      status: "ok",
+      helix_configured: !!helixClient,
+    });
+  });
+
+  // Fallback for legacy HTTP endpoints - create wrapper
+  app.use((req, res, next) => {
+    // Convert Express req/res to HTTP server compatible format
+    const urlPath = new URL(req.url, "http://127.0.0.1").pathname;
     ready.then(async () => {
-      const url = new URL(req.url, "http://127.0.0.1");
-      if (req.method === "POST" && url.pathname === "/refetch") {
+      if (req.method === "POST" && urlPath === "/refetch") {
         try {
           const updated = await refresh();
-          send(res, 200, JSON.stringify(updated), "application/json");
+          res.status(200).json(updated);
         } catch {
-          send(res, 502, JSON.stringify({ error: refreshError }), "application/json");
+          res.status(502).json({ error: refreshError });
         }
         return;
       }
       const shown = loadSlate(dbPath);
-      if (req.method === "GET" && url.pathname === "/") {
-        send(res, 200, renderPage(shown, refreshError), "text/html; charset=utf-8");
+      if (req.method === "GET" && urlPath === "/") {
+        res.type("text/html; charset=utf-8").send(renderPage(shown, refreshError));
         return;
       }
-      if (req.method === "GET" && url.pathname === "/record") {
-        send(res, 200, JSON.stringify({ ...shown, refreshError }), "application/json");
+      if (req.method === "GET" && urlPath === "/record") {
+        res.json({ ...shown, refreshError });
         return;
       }
-      send(res, 404, "not found", "text/plain; charset=utf-8");
+      res.status(404).send("not found");
     }).catch((error) => {
-      if (!res.headersSent) send(res, 500, error.message, "text/plain; charset=utf-8");
+      if (!res.headersSent) res.status(500).send(error.message);
     });
   });
+
   return ready.then(() => new Promise((resolveReady) => {
-    server.listen(port, host, () => {
+    const server = app.listen(port, host, () => {
+      const addr = server.address();
       resolveReady({
-        port: server.address().port,
+        port: addr.port,
         close() {
-          return new Promise((done) => server.close(done));
+          return new Promise((done) => {
+            server.close(done);
+          });
         },
       });
     });
@@ -157,7 +291,12 @@ if (launchedDirectly) {
     dbPath: join(root, "data", "slate.sqlite"),
     host: process.env.HOST ?? "127.0.0.1",
     port: Number(process.env.PORT ?? 4178),
-  }).then(({ port }) => {
+    helixClientId: process.env.TWITCH_CLIENT_ID || "",
+    helixAccessToken: process.env.TWITCH_ACCESS_TOKEN || "",
+  }).then(({ port, close }) => {
     console.log(`slate-marks http://${process.env.HOST ?? "127.0.0.1"}:${port}`);
+  }).catch(err => {
+    console.error("Failed to start server:", err.message);
+    process.exit(1);
   });
 }
