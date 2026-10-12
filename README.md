@@ -1,8 +1,14 @@
 # slate-marks
 
-Record a seasonal US team-sport lineup against a Polymarket outcome, and keep that record as one attribution mark.
+Polymarket sportsbook attribution system for Solana mainnet, Radio LAN, and ICELAN.
 
-The mark is credibility for sportsmanship. It is not a bet, not a pack, not a title to a physical card, and not a payout. This repository is not Radio LAN, not ansem-radio, not vault-titles, not battleship-kit, and not twzrd-trust.
+This repository records seasonal US team-sport lineups against Polymarket outcomes as non-transferable attribution marks. The marks bind evidence (Polymarket resolvedOutcome, creator attestations, engagement observations) to contribution records on three systems:
+
+1. **Solana mainnet** — attestation records for sportsbook evidence.
+2. **Radio LAN** — Twitch streamer-culture engagement marks (public Helix metrics: viewers, chat, cheers, raids).
+3. **ICELAN** — reward credential records keyed to Radio LAN attestations.
+
+Attribution is credibility for sportsmanship. It is not a bet, not a price, not a payout, and not a custody transfer. The signer stays uninvoked and no token is minted or transferred by this code.
 
 ## Enter the slate
 
