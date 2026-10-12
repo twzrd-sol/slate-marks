@@ -256,4 +256,3 @@ All tests pass. Run: `npm test -- test/rlan.test.js`
 - `src/slate.js` — Mark data model
 - `docs/MAINNET_ADAPTER.md` — Mainnet adapter (parallel integration)
 - `test/rlan.test.js` — Full constraint validation tests
-- `~/ops-history/ansem-radio-docs-20261002/docs/STREAMER_MARKETS.md` — Radio LAN context

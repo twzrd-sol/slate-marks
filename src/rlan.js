@@ -113,7 +113,7 @@ export function createEngagementMark(frozenMark, creator, observations) {
 
     // Engagement metrics (derived from observations)
     engagement: {
-      viewerPeakCount: Math.max(...observations.filter((o) => o.signal === "viewers").map((o) => o.count || 0)),
+      viewerPeakCount: Math.max(0, ...observations.filter((o) => o.signal === "viewers").map((o) => o.count || 0)),
       chatEventsCount: observations.filter((o) => o.signal === "chat").length,
       cheersCount: observations.filter((o) => o.signal === "cheer").reduce((sum, o) => sum + (o.count || 0), 0),
       raidsCount: observations.filter((o) => o.signal === "raid").length,
