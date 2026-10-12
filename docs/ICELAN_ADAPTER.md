@@ -1,6 +1,6 @@
 # ICELAN Reward Credential Adapter
 
-ICELAN integration for slate-marks. Creates non-transferable unpriced reward credential records bound to frozen marks.
+ICELAN integration for slate-marks. Creates non-transferable unpriced reward credential records bound to RLAN engagement marks.
 
 Credentials are attestations of contribution — not bets, not prices, not transfers. The signer stays uninvoked.
 
@@ -8,12 +8,13 @@ Credentials are attestations of contribution — not bets, not prices, not trans
 
 ### Reward Credential
 
-Non-transferable record created from a frozen mark:
+Non-transferable record created from an RLAN engagement mark reference:
 
 ```javascript
 {
   id: "icelan_credential_mark_1",
   markId: "mark_1",
+  rlanMarkId: "rlan_engagement_mark_1",  // Reference to RLAN PDA
   creator: "So11111111111111111111111111111111111111112", // Signer identity (never invoked)
 
   // Sportsbook evidence (context only)
@@ -29,25 +30,38 @@ Non-transferable record created from a frozen mark:
 }
 ```
 
-### Critical Constraint: No RLAN Observations
+### Chain of Records
 
-ICELAN input is **frozen marks only**. Input must never carry:
+ICELAN credentials complete the chain:
+
+```
+Frozen Mark (Polymarket evidence)
+    ↓
+RLAN Engagement Mark (Twitch observations)
+    ↓
+ICELAN Credential (Unpriced credential, references RLAN)
+```
+
+### Critical Constraint: Reference, Not Full Object
+
+ICELAN input is **an RLAN mark reference**, not a full RLAN mark object. Input must never carry:
 - `observations` (RLAN engagement data)
 - `observationSummary` (RLAN aggregates)
 - `engagement` (RLAN derived metrics)
 
-This enforces the policy: "Twitch data never in reward calculation." ICELAN credentials bind to mark evidence, not to streamer metrics.
+This enforces the policy: "Twitch data never in reward calculation." Credentials reference the RLAN mark (which holds observations), never embed them.
 
-**Test:** `createRewardCredential` throws if input contains any of these fields.
+**Test:** `createRewardCredential` throws if input is a full RLAN object (with observations).
 
 ## Policy Constraints (Binding)
 
 All constraints from `docs/NON_GOALS.md` are enforced:
 
 1. **No RLAN observations in input**
-   - Input must be frozen marks only
+   - Input must be a reference object only (markId + rlanMarkId)
    - Rejects if observations/observationSummary/engagement present
-   - Ensures Twitch data stays observation-only
+   - Ensures credentials reference observations, never embed them
+   - Twitch data stays observation-only
 
 2. **Non-transferable record**
    - `transferable: false` enforced on every credential
@@ -70,7 +84,9 @@ All constraints from `docs/NON_GOALS.md` are enforced:
 ## Data Flow
 
 ```
-Frozen Mark (sportsbook evidence)
+RLAN Engagement Mark (with observations)
+    ↓
+Reference Extraction { markId, rlanMarkId }
     ↓
 createRewardCredential()  ← Rejects if observations present
     ↓
@@ -78,25 +94,28 @@ validateCredentialConstraints()  ← Enforces all 4 constraints
     ↓
 Validated Reward Credential
     ↓
-encodeCredentialData()  ← Strips internal flags, keeps evidence
+encodeCredentialData()  ← Strips internal flags, includes rlanMarkId
     ↓
 JSON ready for ICELAN chain storage
 ```
 
 ## API
 
-### `createRewardCredential(frozenMark, creator)`
+### `createRewardCredential(rlanReference, creator)`
 
-Creates a credential from a frozen mark.
+Creates a credential from an RLAN engagement mark reference.
 
 **Requires:**
-- `frozenMark.frozen === true`
+- `rlanReference.markId`: Slate fixture identifier (string)
+- `rlanReference.rlanMarkId`: RLAN engagement PDA identifier (string)
+- `rlanReference.gameId`: League/fixture string (optional)
+- `rlanReference.resolvedOutcome`: Outcome from frozen mark (optional)
 - `creator`: Signer pubkey (string)
-- `frozenMark` must NOT have `observations`, `observationSummary`, or `engagement`
+- `rlanReference` must NOT have `observations`, `observationSummary`, or `engagement`
 
-**Returns:** Credential with `transferable: false`, `monetized: false`
+**Returns:** Credential with `transferable: false`, `monetized: false`, `rlanMarkId` included
 
-**Throws:** If any RLAN fields present or input invalid
+**Throws:** If reference is a full RLAN object or input invalid
 
 ### `validateCredentialConstraints(credential)`
 
@@ -113,18 +132,19 @@ Encodes for on-chain storage.
 - `monetized` (enforced by contract)
 
 **Includes:**
-- `creator`, `gameId`, `resolvedOutcome`
+- `creator`, `markId`, `rlanMarkId`
+- `gameId`, `resolvedOutcome`
 - `citedAt`, `createdAt`
 
-### `prepareICELANBatch(slate)`
+### `prepareICELANBatch(slate, engagementMarksByMarkId)`
 
-Prepares batch from slate.
+Prepares batch from RLAN engagement marks.
 
-**Input:** Slate with frozen marks
+**Input:** Array of engagement marks (with markId + rlanMarkId)
 
 **Returns:** Array of validated credentials
 
-**Skips:** Unfrozen marks (logs warning)
+**Skips:** Marks with missing engagement data (logs warning)
 
 ### `createCredentialBatchStatus(credentials)`
 
@@ -132,22 +152,22 @@ Tracks credentials through chain write lifecycle.
 
 ## Testing
 
-12 tests cover:
-- Observation rejection (3 tests: observations, observationSummary, engagement)
-- Credential creation from frozen marks
-- Constraint validation (non-transferable, monetized)
-- Batch filtering (unfrozen marks skipped)
-- JSON encoding
-- Batch status tracking
+11 tests cover:
+- RLAN reference rejection (3 tests: observations, observationSummary, engagement)
+- Reference field validation (2 tests: markId, rlanMarkId required)
+- Constraint validation (3 tests: non-transferable, monetized, valid)
+- JSON encoding (1 test: includes rlanMarkId, strips flags)
+- Batch status tracking (1 test)
 
 All tests pass. Run: `npm test -- test/icelan.test.js`
 
 ## Integration Checklist
 
-- [ ] Token-2022 NonTransferable mint design (shared with RLAN)
+- [ ] RLAN engagement mark data source (how marks are provided to ICELAN)
+- [ ] Token-2022 NonTransferable layout (shared with RLAN)
 - [ ] On-chain credential PDAs (ICELAN layout)
-- [ ] Write endpoint (`POST /icelan/attest`)
-- [ ] Link credential creation to frozen mark flow
+- [ ] Write endpoint (`POST /prepare/icelan`)
+- [ ] Link credential creation to frozen mark + engagement flow
 - [ ] Integrate with /muse/mcp for credential claims
 - [ ] Add integration tests with live devnet RPC
 - [ ] Security review: credential handling, no payout confusion
@@ -155,10 +175,10 @@ All tests pass. Run: `npm test -- test/icelan.test.js`
 
 ## Critical Constraints Reminder
 
-**NO RLAN OBSERVATIONS IN ICELAN INPUT:**
-- Input is frozen marks only
+**REFERENCE ONLY, NOT FULL OBJECT:**
+- Input is RLAN mark reference (markId + rlanMarkId)
 - Never accept observations/observationSummary/engagement
-- Ensures Twitch data is observation layer only
+- Ensures Twitch data is not embedded in credential
 - Enforces policy: "Twitch data never in reward calculation"
 
 **NON-TRANSFERABLE:**
@@ -178,8 +198,9 @@ All tests pass. Run: `npm test -- test/icelan.test.js`
 
 ## References
 
+- `docs/ICELAN_ADAPTER.md` — This design specification
 - `docs/NON_GOALS.md` — Policy constraints (binding)
-- `docs/architecture.md` — Slate mark structure
+- `docs/ONCHAIN_DESIGN.md` — PDA layouts and Borsh encoding
 - `docs/MAINNET_ADAPTER.md` — Mainnet adapter (parallel integration)
 - `docs/RLAN_ADAPTER.md` — RLAN adapter (observations only)
 - `test/icelan.test.js` — Full constraint validation tests
