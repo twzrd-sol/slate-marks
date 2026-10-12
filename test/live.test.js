@@ -73,14 +73,26 @@ test("Gamma winner is tied to its outcome token and event identity must be prese
 test("pullLiveResolved reads the Gamma events URL", async () => {
   let seen = "";
   let options;
-  const payload = await pullLiveResolved(async (url, fetchOptions) => {
-    seen = url;
-    options = fetchOptions;
-    return { ok: true, json: async () => [lakers] };
-  });
+  let timeoutMs;
+  const originalTimeout = AbortSignal.timeout;
+  AbortSignal.timeout = (milliseconds) => {
+    timeoutMs = milliseconds;
+    return new AbortController().signal;
+  };
+  let payload;
+  try {
+    payload = await pullLiveResolved(async (url, fetchOptions) => {
+      seen = url;
+      options = fetchOptions;
+      return { ok: true, json: async () => [lakers] };
+    });
+  } finally {
+    AbortSignal.timeout = originalTimeout;
+  }
   assert.match(seen, /^https:\/\/gamma-api\.polymarket\.com\/events\?/);
   assert.match(seen, /tag_slug=nba/);
   assert.ok(options.signal instanceof AbortSignal);
+  assert.equal(timeoutMs, 10_000);
   assert.equal(payload.condition.conditionId, lakers.markets[0].conditionId);
 });
 

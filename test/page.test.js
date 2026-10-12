@@ -3,6 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 import { mockResolvedGamma } from "../src/pull.js";
 import { startSlateServer } from "../src/server.js";
 
@@ -127,6 +128,68 @@ test("an initial read failure still starts with a visible error and empty board"
     assert.match(page, /Refresh failed: offline/);
     assert.match(page, /No frozen mark/);
   } finally {
+    await server.close();
+  }
+});
+
+test("the page shows transport errors from the browser refresh request", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "slate-browser-failure-"));
+  const server = await startSlateServer({ dbPath: join(dir, "slate.sqlite"), fetchImpl: async () => mockResolvedGamma(), host: "127.0.0.1", port: 0 });
+  try {
+    const page = await fetch(`http://127.0.0.1:${server.port}/`).then((response) => response.text());
+    const script = page.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+    assert.ok(script);
+    let clickHandler;
+    const status = {};
+    const elements = {
+      refetch: { addEventListener: (_name, handler) => { clickHandler = handler; } },
+      "refresh-status": status,
+    };
+    runInNewContext(script, {
+      document: { getElementById: (id) => elements[id] },
+      fetch: async () => { throw new Error("browser network offline"); },
+      location: { reload() {} },
+    });
+    await clickHandler();
+    assert.equal(status.className, "error");
+    assert.equal(status.textContent, "browser network offline");
+  } finally {
+    await server.close();
+  }
+});
+
+test("concurrent refetch requests share one Gamma read", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "slate-refresh-coalesce-"));
+  const dbPath = join(dir, "slate.sqlite");
+  let calls = 0;
+  let notifySecondRead;
+  const secondReadStarted = new Promise((resolve) => { notifySecondRead = resolve; });
+  let finishSecondRead;
+  const secondRead = new Promise((resolve) => { finishSecondRead = resolve; });
+  const server = await startSlateServer({
+    dbPath,
+    fetchImpl: async () => {
+      calls += 1;
+      if (calls === 1) return mockResolvedGamma();
+      notifySecondRead();
+      return secondRead;
+    },
+    host: "127.0.0.1",
+    port: 0,
+  });
+  const base = `http://127.0.0.1:${server.port}`;
+  try {
+    const first = fetch(`${base}/refetch`, { method: "POST" });
+    const second = fetch(`${base}/refetch`, { method: "POST" });
+    await secondReadStarted;
+    assert.equal(calls, 2, "one startup read plus one shared refresh read");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    finishSecondRead(mockResolvedGamma());
+    const responses = await Promise.all([first, second]);
+    assert.deepEqual(responses.map((response) => response.status), [200, 200]);
+    assert.equal(calls, 2);
+  } finally {
+    finishSecondRead(mockResolvedGamma());
     await server.close();
   }
 });

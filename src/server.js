@@ -58,15 +58,19 @@ function renderPage(slate, refreshError = "") {
   </main>
   <script>
     document.getElementById("refetch").addEventListener("click", async () => {
-      const response = await fetch("/refetch", { method: "POST" });
-      if (response.ok) {
-        location.reload();
-        return;
+      try {
+        const response = await fetch("/refetch", { method: "POST" });
+        if (response.ok) {
+          location.reload();
+          return;
+        }
+        const result = await response.json().catch(() => ({}));
+        throw new Error(result.error || "Refresh failed; saved history is unchanged.");
+      } catch (error) {
+        const status = document.getElementById("refresh-status");
+        status.className = "error";
+        status.textContent = error.message || "Refresh failed; saved history is unchanged.";
       }
-      const result = await response.json().catch(() => ({}));
-      const status = document.getElementById("refresh-status");
-      status.className = "error";
-      status.textContent = result.error || "Refresh failed; saved history is unchanged.";
     });
   </script>
 </body>
